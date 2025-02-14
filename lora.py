@@ -1,6 +1,6 @@
 #include "Arduino.h"
 #include "LoRaWan_APP.h"
-#include "HT_board.h"
+#include "heltec.h" // Changed from HT_board.h to heltec.h
 
 // Forward declare the callback functions
 static void prepareTxFrame(uint8_t port);
@@ -19,53 +19,52 @@ bool isTxConfirmed = true;
 uint8_t confirmedNbTrials = 4;
 
 /* Application data buffer */
-RUI_LORA_STATUS_T app_lora_status;
 uint8_t appData[LORAWAN_APP_DATA_MAX_SIZE];
 uint8_t appDataSize = 0;
 
 void setup() {
-    // Initialize Serial for debugging
     Serial.begin(115200);
     delay(1500);
     Serial.println("LoRaWAN Node");
     
-    // Initialize LoRaWAN
-    if (api.lorawan.nwm.get() != RUI_LORAWAN) {
-        api.lorawan.nwm.set(RUI_LORAWAN);
-        delay(1000);
-    }
+    // Initialize Heltec board
+    Heltec.begin(true /*DisplayEnable Enable*/, 
+                 true /*LoRa Enable*/, 
+                 true /*Serial Enable*/, 
+                 true /*LoRaWAN Enable*/, 
+                 ACTIVE_REGION /*LoRaWAN Region*/);
     
-    // Set LoRaWAN configuration
-    api.lorawan.band.set(ACTIVE_REGION);
-    api.lorawan.dev_eui.set(devEui);
-    api.lorawan.app_eui.set(appEui);
-    api.lorawan.app_key.set(appKey);
-    api.lorawan.confirm.set(isTxConfirmed);
-    api.lorawan.retry.set(confirmedNbTrials);
-    
-    // Register callback for preparing data
-    api.lorawan.register_send_cb(prepareTxFrame);
-    // Register callback for receiving data
-    api.lorawan.register_recv_cb(processDownLinkFrame);
+    // Configure LoRaWAN parameters
+    LoRaWAN.setDevEui(devEui);
+    LoRaWAN.setAppEui(appEui);
+    LoRaWAN.setAppKey(appKey);
+    LoRaWAN.setConfirmedMessageRetryTime(confirmedNbTrials);
+    LoRaWAN.setTxConfirmed(isTxConfirmed);
     
     // Start join procedure
-    if (api.lorawan.join()) {
-        Serial.println("Join request sent");
-    }
+    LoRaWAN.joinOTAA();
+    Serial.println("Joining network...");
 }
 
 void loop() {
-    // Handle LoRaWAN events
-    api.system.lpm.set(RUI_SLEEP_MODE_NONE);
-    api.lorawan.run();
-    
-    if (api.lorawan.join_status.get() == RUI_JOINED) {
-        delay(txDutyCycle);
-        // Send data
-        if (api.lorawan.send(appPort, appData, appDataSize, isTxConfirmed)) {
+    if (LoRaWAN.isJoined()) {
+        if (LoRaWAN.busy()) {
+            return;
+        }
+        
+        if (LoRaWAN.available()) {
+            // Process any received data here
+            processDownLinkFrame(LoRaWAN.read());
+        }
+        
+        if (LoRaWAN.txAvailable()) {
+            prepareTxFrame(appPort);
+            LoRaWAN.send(appPort, appData, appDataSize);
             Serial.println("Sending frame...");
         }
     }
+    
+    delay(txDutyCycle);
 }
 
 static void prepareTxFrame(uint8_t port) {
@@ -77,6 +76,8 @@ static void prepareTxFrame(uint8_t port) {
 }
 
 static void processDownLinkFrame(McpsIndication_t *mcpsIndication) {
+    if (!mcpsIndication) return;
+    
     Serial.printf("Received %d bytes on port %d:\n", 
                  mcpsIndication->BufferSize, 
                  mcpsIndication->Port);
