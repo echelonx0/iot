@@ -1,80 +1,88 @@
-#include "LoRaWan_APP.h"
 #include "Arduino.h"
+#include "LoRaWan_APP.h"
+#include "HT_board.h"
 
-/*
-OTAA Keys - Fill these with the values from your TTN console
-*/
-uint8_t devEui[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+// Forward declare the callback functions
+static void prepareTxFrame(uint8_t port);
+static void processDownLinkFrame(McpsIndication_t *mcpsIndication);
+
+/* OTAA credentials */
+uint8_t devEui[] = { 0x70, 0xB3, 0xD5, 0x7E, 0xD0, 0x06, 0xE0, 0x19 };
 uint8_t appEui[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
-uint8_t appKey[] = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+uint8_t appKey[] = { 0x12, 0x94, 0x2C, 0x7A, 0xD8, 0x29, 0x90, 0x6C, 
+                     0x0C, 0x5B, 0xA9, 0x1B, 0x0E, 0x8D, 0xE5, 0x61 };
 
-// Define the data rate and transmission power for your region
-#define DR_NUM DR_3
-#define TX_POWER_NUM TX_POWER_0
+/* Message settings */
+uint8_t appPort = 2;
+uint32_t txDutyCycle = 20000;
+bool isTxConfirmed = true;
+uint8_t confirmedNbTrials = 4;
 
-// Message to send
-uint8_t appData[64];
+/* Application data buffer */
+RUI_LORA_STATUS_T app_lora_status;
+uint8_t appData[LORAWAN_APP_DATA_MAX_SIZE];
 uint8_t appDataSize = 0;
 
-bool overTheAirActivation = true;
-bool loraWanAdr = true;
-bool isTxConfirmed = true;
-uint32_t appTxDutyCycle = 15000; // Transmission interval in milliseconds
-
 void setup() {
+    // Initialize Serial for debugging
     Serial.begin(115200);
-    while (!Serial);
+    delay(1500);
+    Serial.println("LoRaWAN Node");
     
-    Serial.println("Heltec LoRaWAN Example");
+    // Initialize LoRaWAN
+    if (api.lorawan.nwm.get() != RUI_LORAWAN) {
+        api.lorawan.nwm.set(RUI_LORAWAN);
+        delay(1000);
+    }
     
-    // Initialize LoRa chip
-    Mcu.begin();
+    // Set LoRaWAN configuration
+    api.lorawan.band.set(ACTIVE_REGION);
+    api.lorawan.dev_eui.set(devEui);
+    api.lorawan.app_eui.set(appEui);
+    api.lorawan.app_key.set(appKey);
+    api.lorawan.confirm.set(isTxConfirmed);
+    api.lorawan.retry.set(confirmedNbTrials);
     
-    deviceState = DEVICE_STATE_INIT;
-}
-
-void loop() {
-    switch (deviceState) {
-        case DEVICE_STATE_INIT: {
-            // Initialize the LoRaWAN stack
-            LoRaWAN.init(loraWanAdr, isTxConfirmed, DR_NUM, TX_POWER_NUM, appTxDutyCycle);
-            deviceState = DEVICE_STATE_JOIN;
-            break;
-        }
-        case DEVICE_STATE_JOIN: {
-            Serial.println("Joining network...");
-            LoRaWAN.join();
-            deviceState = DEVICE_STATE_CYCLE;
-            break;
-        }
-        case DEVICE_STATE_CYCLE: {
-            // Schedule next packet transmission
-            txDutyCycleTime = appTxDutyCycle + randr(0, APP_TX_DUTYCYCLE_RND);
-            LoRaWAN.cycle(txDutyCycleTime);
-            deviceState = DEVICE_STATE_SLEEP;
-            break;
-        }
-        case DEVICE_STATE_SEND: {
-            prepareTxFrame();
-            LoRaWAN.send();
-            deviceState = DEVICE_STATE_CYCLE;
-            break;
-        }
-        case DEVICE_STATE_SLEEP: {
-            LoRaWAN.sleep(loraWanClass);
-            break;
-        }
-        default:
-            deviceState = DEVICE_STATE_INIT;
-            break;
+    // Register callback for preparing data
+    api.lorawan.register_send_cb(prepareTxFrame);
+    // Register callback for receiving data
+    api.lorawan.register_recv_cb(processDownLinkFrame);
+    
+    // Start join procedure
+    if (api.lorawan.join()) {
+        Serial.println("Join request sent");
     }
 }
 
-// Prepare data to send
-void prepareTxFrame() {
+void loop() {
+    // Handle LoRaWAN events
+    api.system.lpm.set(RUI_SLEEP_MODE_NONE);
+    api.lorawan.run();
+    
+    if (api.lorawan.join_status.get() == RUI_JOINED) {
+        delay(txDutyCycle);
+        // Send data
+        if (api.lorawan.send(appPort, appData, appDataSize, isTxConfirmed)) {
+            Serial.println("Sending frame...");
+        }
+    }
+}
+
+static void prepareTxFrame(uint8_t port) {
     appDataSize = 4;
-    appData[0] = 0x00; // Add your sensor data here
+    appData[0] = 0x00;  // Add your sensor data here
     appData[1] = 0x01;
     appData[2] = 0x02;
     appData[3] = 0x03;
+}
+
+static void processDownLinkFrame(McpsIndication_t *mcpsIndication) {
+    Serial.printf("Received %d bytes on port %d:\n", 
+                 mcpsIndication->BufferSize, 
+                 mcpsIndication->Port);
+                 
+    for(uint8_t i = 0; i < mcpsIndication->BufferSize; i++) {
+        Serial.printf("%02X ", mcpsIndication->Buffer[i]);
+    }
+    Serial.println();
 }
