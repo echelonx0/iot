@@ -1,10 +1,7 @@
 #include "Arduino.h"
 #include "LoRaWan_APP.h"
-#include "heltec.h" // Changed from HT_board.h to heltec.h
-
-// Forward declare the callback functions
-static void prepareTxFrame(uint8_t port);
-static void processDownLinkFrame(McpsIndication_t *mcpsIndication);
+#include "heltec.h"  // Changed from HT_board.h to heltec.h
+#include "display.h" // For OLED display functionality
 
 /* OTAA credentials */
 uint8_t devEui[] = { 0x70, 0xB3, 0xD5, 0x7E, 0xD0, 0x06, 0xE0, 0x19 };
@@ -23,67 +20,63 @@ uint8_t appData[LORAWAN_APP_DATA_MAX_SIZE];
 uint8_t appDataSize = 0;
 
 void setup() {
+    // Initialize Serial for debugging
     Serial.begin(115200);
-    delay(1500);
-    Serial.println("LoRaWAN Node");
     
-    // Initialize Heltec board
-    Heltec.begin(true /*DisplayEnable Enable*/, 
+    // Initialize Heltec hardware (display, LoRa, etc)
+    Heltec.begin(true /*Display Enable*/, 
                  true /*LoRa Enable*/, 
-                 true /*Serial Enable*/, 
-                 true /*LoRaWAN Enable*/, 
-                 ACTIVE_REGION /*LoRaWAN Region*/);
+                 true /*Serial Enable*/,  
+                 true /*PABOOST Enable*/, 
+                 BAND /*long BAND*/);
+                 
+    // Display init message
+    Heltec.display->clear();
+    Heltec.display->setTextAlignment(TEXT_ALIGN_LEFT);
+    Heltec.display->setFont(ArialMT_Plain_10);
+    Heltec.display->drawString(0, 0, "LoRaWAN Node");
+    Heltec.display->display();
     
-    // Configure LoRaWAN parameters
+    // Initialize LoRaWAN
+    LoRaWAN.init(LORAWAN_CLASS_A, ACTIVE_REGION);
+    
+    // Set credentials
     LoRaWAN.setDevEui(devEui);
     LoRaWAN.setAppEui(appEui);
     LoRaWAN.setAppKey(appKey);
-    LoRaWAN.setConfirmedMessageRetryTime(confirmedNbTrials);
-    LoRaWAN.setTxConfirmed(isTxConfirmed);
+    LoRaWAN.setAdaptiveDR(true);
     
-    // Start join procedure
-    LoRaWAN.joinOTAA();
-    Serial.println("Joining network...");
+    // Join network
+    LoRaWAN.join();
+    
+    Serial.println("Setup complete, joining network...");
 }
 
 void loop() {
-    if (LoRaWAN.isJoined()) {
-        if (LoRaWAN.busy()) {
-            return;
-        }
+    // Check if joined
+    if (LoRaWAN.joined() && !LoRaWAN.busy()) {
+        // Prepare data
+        prepareTxFrame();
         
-        if (LoRaWAN.available()) {
-            // Process any received data here
-            processDownLinkFrame(LoRaWAN.read());
-        }
+        // Send data
+        LoRaWAN.send(appDataSize, appData, appPort, isTxConfirmed);
         
-        if (LoRaWAN.txAvailable()) {
-            prepareTxFrame(appPort);
-            LoRaWAN.send(appPort, appData, appDataSize);
-            Serial.println("Sending frame...");
-        }
+        // Update display
+        Heltec.display->clear();
+        Heltec.display->drawString(0, 0, "Sending data...");
+        Heltec.display->display();
+        
+        Serial.println("Data sent!");
     }
     
+    // Wait for next transmission
     delay(txDutyCycle);
 }
 
-static void prepareTxFrame(uint8_t port) {
+void prepareTxFrame() {
     appDataSize = 4;
     appData[0] = 0x00;  // Add your sensor data here
     appData[1] = 0x01;
     appData[2] = 0x02;
     appData[3] = 0x03;
-}
-
-static void processDownLinkFrame(McpsIndication_t *mcpsIndication) {
-    if (!mcpsIndication) return;
-    
-    Serial.printf("Received %d bytes on port %d:\n", 
-                 mcpsIndication->BufferSize, 
-                 mcpsIndication->Port);
-                 
-    for(uint8_t i = 0; i < mcpsIndication->BufferSize; i++) {
-        Serial.printf("%02X ", mcpsIndication->Buffer[i]);
-    }
-    Serial.println();
 }
